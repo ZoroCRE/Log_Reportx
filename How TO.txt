@@ -1,0 +1,15 @@
+#Hello Evryone
+
+Don't forget to Edit the SMTP server settings and add your account.
+
+Edit To Work For U 
+LOGS_DIR = "C:\\Logs"
+ERROR_KEYWORDS = ["error", "warning", "critical", "failure"]  # Extendable list of keywords to search
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+SMTP_USER = "EMAIL@gmail.com"
+SMTP_PASSWORD = "PASS_SMTP"  # Gmail App Password
+RECIPIENT_EMAIL = "Email To Receiving the report"
+EMAIL_LINE_THRESHOLD = 10  # Threshold for sending email and generating JSON report
+
+
