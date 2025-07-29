@@ -10,12 +10,25 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
 
+# Constants
+LOGS_DIR = "C:\\Logs"
+ERROR_KEYWORDS = ["error", "warning", "critical", "failure"]  # Extendable list of keywords to search
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+SMTP_USER = "EMAIL@gmail.com"
+SMTP_PASSWORD = "PASS_SMTP"  # Gmail App Password
+RECIPIENT_EMAIL = "Email To Receiving the report"
+EMAIL_LINE_THRESHOLD = 10  # Threshold for sending email and generating JSON report
+
 def get_current_date():
     """Get current date in YYYY-MM-DD format."""
     return datetime.datetime.now().strftime("%Y-%m-%d")
 
-def aggregate_logs(logs_dir="C:\\Logs"):
-    """Aggregate .log and .txt files for today into a dated folder and merge into current_date_error.txt."""
+def aggregate_logs(logs_dir=LOGS_DIR):
+    """
+    Aggregate .log and .txt files for today into a dated folder and merge into current_date_error.txt.
+    Returns: (summary_file_path, date_folder_path, processed_files_list, server_file_mapping)
+    """
     try:
         logs_dir = Path(logs_dir)
         if not logs_dir.exists():
@@ -39,11 +52,9 @@ def aggregate_logs(logs_dir="C:\\Logs"):
         for server_dir in logs_dir.iterdir():
             if server_dir.is_dir() and server_dir.name != current_date:
                 print(f"Checking server directory: {server_dir}")
-                # Look for both .log and .txt files with today's date
                 for ext in ('*.log', '*.txt'):
                     for log_file in server_dir.glob(f"{current_date}{ext}"):
                         if log_file.is_file():
-                            # Copy file to date folder
                             dest_file = date_folder / f"{server_dir.name}_{log_file.name}"
                             shutil.copy(log_file, dest_file)
                             processed_files.append(str(dest_file))
@@ -68,16 +79,17 @@ def aggregate_logs(logs_dir="C:\\Logs"):
         return None, None, [], {}
 
 def analyze_logs(summary_file, date_folder, processed_files, server_file_map):
-    """Analyze current_date_error.txt and create errorless.txt with server prefix for lines containing specified keywords."""
+    """
+    Analyze current_date_error.txt and create errorless.txt with server prefix for lines containing specified keywords.
+    Counts occurrences of each keyword in ERROR_KEYWORDS.
+    Returns: (error_lines_list, keyword_counts_dict)
+    """
     try:
         if not summary_file or not Path(summary_file).exists():
             raise FileNotFoundError(f"Summary file {summary_file} not found")
         print(f"Analyzing summary file: {summary_file}")
 
-        # Define keywords to search for (can be extended with more keywords like 'critical', 'failure')
-        error_keywords = ["error", "warning"]
-        error_count = 0
-        warning_count = 0
+        keyword_counts = {keyword: 0 for keyword in ERROR_KEYWORDS}
         error_lines = []
 
         # Read each processed file to associate lines with server names
@@ -86,13 +98,11 @@ def analyze_logs(summary_file, date_folder, processed_files, server_file_map):
             with open(log_file, 'r', encoding='utf-8') as f:
                 for line in f:
                     line_lower = line.lower()
-                    # Check if any keyword is in the line
-                    if any(keyword in line_lower for keyword in error_keywords):
+                    if any(keyword in line_lower for keyword in ERROR_KEYWORDS):
                         error_lines.append((server_name, line.strip()))
-                        if "error" in line_lower:
-                            error_count += 1
-                        if "warning" in line_lower:
-                            warning_count += 1
+                        for keyword in ERROR_KEYWORDS:
+                            if keyword in line_lower:
+                                keyword_counts[keyword] += 1
 
         # Write to errorless.txt with server prefix
         errorless_file = date_folder / "errorless.txt"
@@ -114,15 +124,18 @@ def analyze_logs(summary_file, date_folder, processed_files, server_file_map):
         except Exception as e:
             print(f"Error deleting {summary_file}: {str(e)}")
 
-        print(f"Found {error_count} lines with 'ERROR' and {warning_count} lines with 'WARNING'")
-        return error_lines, error_count, warning_count
+        print(f"Keyword counts: {', '.join(f'{k}: {v}' for k, v in keyword_counts.items())}")
+        return error_lines, keyword_counts
 
     except Exception as e:
         print(f"Error during log analysis: {str(e)}")
-        return [], 0, 0
+        return [], {keyword: 0 for keyword in ERROR_KEYWORDS}
 
-def process_errorless(logs_dir, date_folder, processed_files, error_lines, error_count, warning_count):
-    """Process errorless.txt, save report as JSON if > 10 lines, and send email with JSON attached."""
+def process_errorless(logs_dir, date_folder, processed_files, error_lines, keyword_counts):
+    """
+    Process errorless.txt, save report as JSON if > 10 lines, and send email with JSON attached.
+    Returns: report_file_path or None
+    """
     try:
         current_date = get_current_date()
         errorless_file = date_folder / "errorless.txt"
@@ -139,22 +152,21 @@ def process_errorless(logs_dir, date_folder, processed_files, error_lines, error
         report = {
             "report_date": current_date,
             "total_files_processed": len(processed_files),
-            "error_count": error_count,
-            "warning_count": warning_count,
+            "keyword_counts": keyword_counts,
             "critical_errors": [f"{server_name}: {line}" for server_name, line in error_lines if "error" in line.lower()]
         }
 
         # Save report as JSON file if errorless.txt has more than 10 lines
         report_file = None
-        if line_count > 10:
+        if line_count > EMAIL_LINE_THRESHOLD:
             report_file = date_folder / f"{current_date}_report.json"
             with open(report_file, 'w', encoding='utf-8') as f:
                 json.dump(report, f, indent=4, ensure_ascii=False)
             print(f"Saved report to: {report_file}")
             # Send email with JSON file attached
-            send_email(report_file, current_date, error_count)
+            send_email(report_file, current_date, keyword_counts.get("error", 0))
         else:
-            print("No email sent (less than or equal to 10 error/warning lines)")
+            print(f"No email sent (less than or equal to {EMAIL_LINE_THRESHOLD} error/warning lines)")
 
         return str(report_file) if report_file else None
 
@@ -165,17 +177,10 @@ def process_errorless(logs_dir, date_folder, processed_files, error_lines, error
 def send_email(report_file, current_date, error_count):
     """Send email with the JSON report file attached, including error_count in the subject."""
     try:
-        # Email configuration for Gmail
-        smtp_server = "HOST_SMTP"
-        smtp_port = 587
-        smtp_user = "SMTP_USER"
-        smtp_password = "SMTP_PASS"  # Gmail App Password
-        recipient_email = "Your_EMAIL"
-
         # Create a multipart message
         msg = MIMEMultipart()
-        msg['From'] = smtp_user
-        msg['To'] = recipient_email
+        msg['From'] = SMTP_USER
+        msg['To'] = RECIPIENT_EMAIL
         msg['Subject'] = f"Daily Log Report - {current_date} - {error_count} Errors"
 
         # Add body to email
@@ -200,9 +205,9 @@ def send_email(report_file, current_date, error_count):
         # Configure SMTP server with timeout and retry
         for attempt in range(1, 4):  # Try up to 3 times
             try:
-                with smtplib.SMTP(smtp_server, smtp_port, timeout=10) as server:
+                with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
                     server.starttls()
-                    server.login(smtp_user, smtp_password)
+                    server.login(SMTP_USER, SMTP_PASSWORD)
                     server.send_message(msg)
                 print(f"Email sent successfully on attempt {attempt}")
                 return
@@ -230,10 +235,10 @@ def main():
             return
 
         # Step 2: Analyze logs and clean up
-        error_lines, error_count, warning_count = analyze_logs(summary_file, date_folder, processed_files, server_file_map)
+        error_lines, keyword_counts = analyze_logs(summary_file, date_folder, processed_files, server_file_map)
 
         # Step 3: Process errorless.txt and send alerts
-        report_path = process_errorless("C:\\Logs", date_folder, processed_files, error_lines, error_count, warning_count)
+        report_path = process_errorless(LOGS_DIR, date_folder, processed_files, error_lines, keyword_counts)
 
         print(f"Processing complete. Report saved at: {report_path if report_path else 'None'}")
 
