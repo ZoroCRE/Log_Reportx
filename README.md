@@ -1,6 +1,14 @@
 # Log_Reportx
 Task 1: Automate the Daily Log Monitoring Report  We have several servers that generate log files daily. Our technical team currently reviews these logs manually, which is time-consuming. Your task is to fully automate this process.
 
+
+<h1 align="center">
+</h1>
+<h2 align="center">
+تم استخدم AI للمساعده في حل بعض مشاكل الكود و اضافة بعض الاشيء
+
+</h1>
+
 الموضوع: لدينا عدة خوادم (Servers) تقوم بإنشاء ملفات سجلات (Log files) يوميًا. الفريق التقني حاليًا يقوم بمراجعة هذه السجلات يدويًا، مما يستهلك وقتًا طويلاً. مهمتك هي أتمتة هذه العملية بالكامل.
 
 
@@ -117,6 +125,12 @@ Hello Dev :
 this is reported today  {Data}
 reported link : https://reqres.in/api/users/{ID}
 
-بس كده ياباشا
 
-و دول الاسكربتين
+
+<h1 align="center">
+</h1>
+<h2 align="center">
+تم استخدم AI للمساعده في حل بعض مشاكل الكود و اضافة بعض الاشيء
+
+</h1>
+
