@@ -166,11 +166,11 @@ def send_email(report_file, current_date, error_count):
     """Send email with the JSON report file attached, including error_count in the subject."""
     try:
         # Email configuration for Gmail
-        smtp_server = "smtp.gmail.com"
+        smtp_server = "HOST_SMTP"
         smtp_port = 587
-        smtp_user = "vruiz1003@gmail.com"
-        smtp_password = "ksfgiedqwgbtytjr"  # Gmail App Password
-        recipient_email = "salah.mahmoud.dev@gmail.com"
+        smtp_user = "SMTP_USER"
+        smtp_password = "SMTP_PASS"  # Gmail App Password
+        recipient_email = "Your_EMAIL"
 
         # Create a multipart message
         msg = MIMEMultipart()
