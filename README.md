@@ -5,7 +5,7 @@ Task 1: Automate the Daily Log Monitoring Report  We have several servers that g
 <h1 align="center">
 </h1>
 <h2 align="center">
-تم استخدم AI للمساعده في حل بعض مشاكل الكود و اضافة بعض الاشيء
+تم استخدم AI للمساعده في حل بعض مشاكل الكود و اضافة بعض الخصائص
 
 </h1>
 
@@ -130,7 +130,7 @@ reported link : https://reqres.in/api/users/{ID}
 <h1 align="center">
 </h1>
 <h2 align="center">
-تم استخدم AI للمساعده في حل بعض مشاكل الكود و اضافة بعض الاشيء
+تم استخدم AI للمساعده في حل بعض مشاكل الكود و اضافة بعض الخصائص
 
 </h1>
 
