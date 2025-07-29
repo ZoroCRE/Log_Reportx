@@ -1,11 +1,14 @@
 import json
 import os
 import datetime
-import requests
 import smtplib
 import shutil
+import socket
 from pathlib import Path
 from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
 
 def get_current_date():
     """Get current date in YYYY-MM-DD format."""
@@ -17,20 +20,25 @@ def aggregate_logs(logs_dir="C:\\Logs"):
         logs_dir = Path(logs_dir)
         if not logs_dir.exists():
             raise FileNotFoundError(f"Logs directory {logs_dir} does not exist")
+        print(f"Processing logs directory: {logs_dir}")
 
         current_date = get_current_date()
         date_folder = logs_dir / current_date
         date_folder.mkdir(exist_ok=True)
+        print(f"Created/using date folder: {date_folder}")
         summary_file = date_folder / f"{current_date}_error.txt"
 
         # Clear previous summary file if it exists
         if summary_file.exists():
             summary_file.unlink()
+            print(f"Cleared existing summary file: {summary_file}")
 
         processed_files = []
+        server_file_map = {}
         # Iterate through server subdirectories, excluding the date folder
         for server_dir in logs_dir.iterdir():
             if server_dir.is_dir() and server_dir.name != current_date:
+                print(f"Checking server directory: {server_dir}")
                 # Look for both .log and .txt files with today's date
                 for ext in ('*.log', '*.txt'):
                     for log_file in server_dir.glob(f"{current_date}{ext}"):
@@ -39,44 +47,72 @@ def aggregate_logs(logs_dir="C:\\Logs"):
                             dest_file = date_folder / f"{server_dir.name}_{log_file.name}"
                             shutil.copy(log_file, dest_file)
                             processed_files.append(str(dest_file))
+                            server_file_map[str(dest_file)] = server_dir.name
+                            print(f"Copied {log_file} to {dest_file}")
+
+        if not processed_files:
+            print("No .log or .txt files found for today in any server directories")
+            return None, date_folder, [], {}
 
         # Merge files into current_date_error.txt
-        if processed_files:
-            with open(summary_file, 'w', encoding='utf-8') as dest:
-                for log_file in sorted(processed_files):
-                    with open(log_file, 'r', encoding='utf-8') as src:
-                        dest.write(src.read() + '\n')
+        with open(summary_file, 'w', encoding='utf-8') as dest:
+            for log_file in sorted(processed_files):
+                with open(log_file, 'r', encoding='utf-8') as src:
+                    dest.write(src.read() + '\n')
+                print(f"Merged {log_file} into {summary_file}")
 
-        return str(summary_file), date_folder, processed_files
+        return str(summary_file), date_folder, processed_files, server_file_map
 
     except Exception as e:
         print(f"Error during log aggregation: {str(e)}")
-        return None, None, []
+        return None, None, [], {}
 
-def analyze_logs(summary_file, date_folder):
-    """Analyze current_date_error.txt and create errorless.txt with error/warning lines."""
+def analyze_logs(summary_file, date_folder, processed_files, server_file_map):
+    """Analyze current_date_error.txt and create errorless.txt with server prefix for lines containing specified keywords."""
     try:
-        if not Path(summary_file).exists():
+        if not summary_file or not Path(summary_file).exists():
             raise FileNotFoundError(f"Summary file {summary_file} not found")
+        print(f"Analyzing summary file: {summary_file}")
 
+        # Define keywords to search for (can be extended with more keywords like 'critical', 'failure')
+        error_keywords = ["error", "warning"]
         error_count = 0
         warning_count = 0
         error_lines = []
 
-        with open(summary_file, 'r', encoding='utf-8') as f:
-            for line in f:
-                line_lower = line.lower()
-                if "error" in line_lower or "warning" in line_lower:
-                    error_lines.append(line.strip())
-                    if "error" in line_lower:
-                        error_count += 1
-                    if "warning" in line_lower:
-                        warning_count += 1
+        # Read each processed file to associate lines with server names
+        for log_file in sorted(processed_files):
+            server_name = server_file_map.get(log_file, "Unknown")
+            with open(log_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line_lower = line.lower()
+                    # Check if any keyword is in the line
+                    if any(keyword in line_lower for keyword in error_keywords):
+                        error_lines.append((server_name, line.strip()))
+                        if "error" in line_lower:
+                            error_count += 1
+                        if "warning" in line_lower:
+                            warning_count += 1
 
-        # Write to errorless.txt
-        with open(date_folder / "errorless.txt", 'w', encoding='utf-8') as errorless:
-            for line in error_lines:
-                errorless.write(line + '\n')
+        # Write to errorless.txt with server prefix
+        errorless_file = date_folder / "errorless.txt"
+        with open(errorless_file, 'w', encoding='utf-8') as errorless:
+            for server_name, line in error_lines:
+                errorless.write(f"{server_name}: {line}\n")
+        print(f"Created errorless.txt at: {errorless_file}")
+
+        # Clean up: Delete copied files and summary file
+        for log_file in processed_files:
+            try:
+                Path(log_file).unlink()
+                print(f"Deleted copied file: {log_file}")
+            except Exception as e:
+                print(f"Error deleting {log_file}: {str(e)}")
+        try:
+            Path(summary_file).unlink()
+            print(f"Deleted summary file: {summary_file}")
+        except Exception as e:
+            print(f"Error deleting {summary_file}: {str(e)}")
 
         print(f"Found {error_count} lines with 'ERROR' and {warning_count} lines with 'WARNING'")
         return error_lines, error_count, warning_count
@@ -86,16 +122,18 @@ def analyze_logs(summary_file, date_folder):
         return [], 0, 0
 
 def process_errorless(logs_dir, date_folder, processed_files, error_lines, error_count, warning_count):
-    """Process errorless.txt, post to ShareText.io if lines > 10, and send email."""
+    """Process errorless.txt, save report as JSON if > 10 lines, and send email with JSON attached."""
     try:
         current_date = get_current_date()
         errorless_file = date_folder / "errorless.txt"
         if not errorless_file.exists():
             raise FileNotFoundError(f"Errorless file {errorless_file} not found")
+        print(f"Processing errorless file: {errorless_file}")
 
         # Count lines in errorless.txt
         with open(errorless_file, 'r', encoding='utf-8') as f:
             line_count = sum(1 for line in f)
+        print(f"Errorless.txt contains {line_count} lines")
 
         # Prepare report data
         report = {
@@ -103,56 +141,81 @@ def process_errorless(logs_dir, date_folder, processed_files, error_lines, error
             "total_files_processed": len(processed_files),
             "error_count": error_count,
             "warning_count": warning_count,
-            "critical_errors": [f"{current_date} ERROR: {line}" for line in error_lines if "error" in line.lower()]
+            "critical_errors": [f"{server_name}: {line}" for server_name, line in error_lines if "error" in line.lower()]
         }
 
-        share_url = None
-        # Post to ShareText.io if line count > 10
+        # Save report as JSON file if errorless.txt has more than 10 lines
+        report_file = None
         if line_count > 10:
-            # Convert report to text for ShareText.io
-            report_text = json.dumps(report, indent=4, ensure_ascii=False)
-            try:
-                # Hypothetical ShareText.io API endpoint
-                response = requests.post(
-                    "https://sharetext.io/api/share",
-                    headers={"Content-Type": "text/plain"},
-                    data=report_text.encode('utf-8')
-                )
-                if response.status_code == 200:
-                    share_url = response.json().get("url", "unknown")
-                    print(f"Report shared successfully, URL: {share_url}")
-                else:
-                    print(f"Failed to share report: {response.status_code}")
-            except requests.RequestException as e:
-                print(f"Error posting to ShareText.io: {str(e)}")
+            report_file = date_folder / f"{current_date}_report.json"
+            with open(report_file, 'w', encoding='utf-8') as f:
+                json.dump(report, f, indent=4, ensure_ascii=False)
+            print(f"Saved report to: {report_file}")
+            # Send email with JSON file attached
+            send_email(report_file, current_date, error_count)
+        else:
+            print("No email sent (less than or equal to 10 error/warning lines)")
 
-        # Send email
-        send_email(share_url, current_date)
-
-        return share_url
+        return str(report_file) if report_file else None
 
     except Exception as e:
         print(f"Error in error processing: {str(e)}")
         return None
 
-def send_email(share_url, current_date):
-    """Send email notification with report details."""
+def send_email(report_file, current_date, error_count):
+    """Send email with the JSON report file attached, including error_count in the subject."""
     try:
-        msg = MIMEText(
-            f"Hello Dev,\n\n"
-            f"This is reported today {current_date}\n\n"
-            f"Reported link: {share_url if share_url else 'unknown'}"
-        )
-        msg['Subject'] = f"Daily Log Report - {current_date}"
-        msg['From'] = ""  # Replace with your email
-        msg['To'] = "salah.mahmoud.dev@gmail.com"  # Replace with company email
+        # Email configuration for Gmail
+        smtp_server = "smtp.gmail.com"
+        smtp_port = 587
+        smtp_user = "vruiz1003@gmail.com"
+        smtp_password = "ksfgiedqwgbtytjr"  # Gmail App Password
+        recipient_email = "salah.mahmoud.dev@gmail.com"
 
-        # Configure SMTP server (example using Gmail)
-        with smtplib.SMTP('', 587) as server:
-            server.starttls()
-            server.login("", "")  # Replace with your credentials
-            server.send_message(msg)
-        print("Email sent successfully")
+        # Create a multipart message
+        msg = MIMEMultipart()
+        msg['From'] = smtp_user
+        msg['To'] = recipient_email
+        msg['Subject'] = f"Daily Log Report - {current_date} - {error_count} Errors"
+
+        # Add body to email
+        body = f"Hello Dev,\n\nThis is the log report for {current_date}.\nThe report is attached as a JSON file.\n\nBest regards,\nYour Log Processor"
+        msg.attach(MIMEText(body, 'plain'))
+
+        # Attach the JSON file
+        if report_file and Path(report_file).exists():
+            with open(report_file, 'rb') as attachment:
+                part = MIMEBase('application', 'octet-stream')
+                part.set_payload(attachment.read())
+            encoders.encode_base64(part)
+            part.add_header(
+                'Content-Disposition',
+                f'attachment; filename={Path(report_file).name}'
+            )
+            msg.attach(part)
+            print(f"Attached {report_file} to email")
+        else:
+            print(f"Warning: Report file {report_file} not found for attachment")
+
+        # Configure SMTP server with timeout and retry
+        for attempt in range(1, 4):  # Try up to 3 times
+            try:
+                with smtplib.SMTP(smtp_server, smtp_port, timeout=10) as server:
+                    server.starttls()
+                    server.login(smtp_user, smtp_password)
+                    server.send_message(msg)
+                print(f"Email sent successfully on attempt {attempt}")
+                return
+            except socket.timeout:
+                print(f"SMTP connection timed out on attempt {attempt}")
+                if attempt == 3:
+                    raise Exception("Failed to connect to SMTP server after 3 attempts")
+            except smtplib.SMTPAuthenticationError:
+                raise Exception("SMTP authentication failed. Check your email and App Password.")
+            except Exception as e:
+                print(f"SMTP error on attempt {attempt}: {str(e)}")
+                if attempt == 3:
+                    raise Exception(f"Failed to send email after 3 attempts: {str(e)}")
 
     except Exception as e:
         print(f"Error sending email: {str(e)}")
@@ -161,17 +224,18 @@ def main():
     """Main function to orchestrate log processing and error handling."""
     try:
         # Step 1: Aggregate logs
-        summary_file, date_folder, processed_files = aggregate_logs()
+        summary_file, date_folder, processed_files, server_file_map = aggregate_logs()
         if not summary_file or not date_folder:
-            raise RuntimeError("Log aggregation failed")
+            print("Skipping analysis and error processing due to aggregation failure")
+            return
 
-        # Step 2: Analyze logs
-        error_lines, error_count, warning_count = analyze_logs(summary_file, date_folder)
+        # Step 2: Analyze logs and clean up
+        error_lines, error_count, warning_count = analyze_logs(summary_file, date_folder, processed_files, server_file_map)
 
         # Step 3: Process errorless.txt and send alerts
-        share_url = process_errorless("C:\\Logs", date_folder, processed_files, error_lines, error_count, warning_count)
+        report_path = process_errorless("C:\\Logs", date_folder, processed_files, error_lines, error_count, warning_count)
 
-        print(f"Processing complete. Share URL: {share_url if share_url else 'None'}")
+        print(f"Processing complete. Report saved at: {report_path if report_path else 'None'}")
 
     except Exception as e:
         print(f"Fatal error in main process: {str(e)}")
